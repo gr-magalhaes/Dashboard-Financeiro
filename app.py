@@ -32,7 +32,9 @@ def norm(texto):
 
 
 def norm_tag(texto):
-    return " ".join(norm(texto).replace("-", " ").replace("_", " ").split())
+    # só letras e números: ignora acentos, maiúsculas, espaços, hífens (inclusive
+    # os "especiais", como – e ‑) e qualquer outro símbolo
+    return "".join(c for c in norm(texto) if c.isalnum())
 
 
 def brl(v):
@@ -176,7 +178,8 @@ def montar_df(tarefas, f_valor, f_nf, f_pago, f_data, tag_ignorar, tag_fora):
     hoje = pd.Timestamp.now(tz=TZ).tz_localize(None).normalize()
     linhas = []
     for t in tarefas:
-        tags = {norm_tag(x.get("name", "")) for x in t.get("tags", [])}
+        nomes_tags = [x.get("name", "") for x in t.get("tags", [])]
+        tags = {norm_tag(n) for n in nomes_tags}
         resp = [
             (a.get("username") or a.get("email") or "").strip()
             for a in t.get("assignees", [])
@@ -209,7 +212,7 @@ def montar_df(tarefas, f_valor, f_nf, f_pago, f_data, tag_ignorar, tag_fora):
                 "Origem da data": origem,
                 "Situação": situacao,
                 "Responsáveis": resp,
-                "Tags": sorted(tags),
+                "Tags": nomes_tags,
                 "Fora do exp": any(tag_fora in x for x in tags),
                 "Ignorar": any(tag_ignorar in x for x in tags),
                 "Link": t.get("url", ""),
@@ -275,11 +278,12 @@ def tabela_tarefas(det, cols_socios, crescente=True):
     det = det.sort_values("Data", ascending=crescente).copy()
     det["Data"] = det["Data"].dt.strftime("%d/%m/%Y")
     det["Responsáveis"] = det["Responsáveis"].apply(lambda r: ", ".join(r))
+    det["Tags"] = det["Tags"].apply(lambda r: ", ".join(r))
     dinheiro = ["Valor", "Líquido"] + cols_socios
     cols = (
         ["Tarefa", "Status", "Situação", "Data", "Origem da data"]
         + dinheiro
-        + ["Pago", "NF", "Fora do exp", "Responsáveis", "Link"]
+        + ["Pago", "NF", "Fora do exp", "Responsáveis", "Tags", "Link"]
     )
     st.dataframe(
         formata_dinheiro(det, dinheiro)[cols],
@@ -452,7 +456,8 @@ contagem_tags = {}
 for lista in df["Tags"]:
     for x in lista:
         contagem_tags[x] = contagem_tags.get(x, 0) + 1
-n_ignoradas = int(df["Ignorar"].sum())
+ignoradas = df[df["Ignorar"]].copy()
+n_ignoradas = len(ignoradas)
 df = df[~df["Ignorar"]]
 
 with st.sidebar:
@@ -465,14 +470,21 @@ with st.sidebar:
     periodo = st.date_input("Período", (ini_padrao, fim_padrao), format="DD/MM/YYYY")
     with st.expander("Diagnóstico de tags"):
         st.caption(
-            f"Procurando por \"{TAG_FORA}\" (fora do exp) e \"{TAG_IGNORAR}\" (ignorar). "
-            "Acentos, maiúsculas e hífens não importam."
+            f"Procurando por \"{cfg('TAG_FORA_EXP', 'fora do exp')}\" (fora do exp) e "
+            f"\"{cfg('TAG_IGNORAR', 'pre-outubro')}\" (ignorar). "
+            "Acentos, maiúsculas, espaços e hífens não importam."
         )
         if contagem_tags:
             st.write({k: v for k, v in sorted(contagem_tags.items())})
         else:
             st.write("Nenhuma tarefa retornada pelo ClickUp tem tags.")
         st.caption(f"Tarefas \"fora do exp\" reconhecidas: {int(df['Fora do exp'].sum())}")
+        if n_ignoradas:
+            st.caption(f"Tarefas ignoradas ({n_ignoradas}):")
+            ign = ignoradas[["Tarefa", "Status", "Valor", "Tags"]].copy()
+            ign["Tags"] = ign["Tags"].apply(", ".join)
+            ign["Valor"] = ign["Valor"].apply(brl)
+            st.dataframe(ign, hide_index=True, width="stretch")
     if n_ignoradas:
         st.caption(f"{n_ignoradas} tarefa(s) ignorada(s) pela tag \"{cfg('TAG_IGNORAR', 'pre-outubro')}\".")
     if any(v for k, v in st.session_state.items() if str(k).startswith("fechado_")):
